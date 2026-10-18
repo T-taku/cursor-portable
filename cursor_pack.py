@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""Cursorの設定を別のパソコンへ運ぶ。
-
-運ぶもの: settings.json、keybindings.json、スニペット、MCP設定、
-拡張機能の一覧、このパソコンのファイルに入っているユーザールール。
-
-運ばないもの: ログイン情報、チャット履歴、拡張機能の実体、
-秘密情報（トークンやパスワードは空にする）。
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -44,6 +35,73 @@ IGNORE_PATHS = {
     "/usr/sbin",
     "/sbin",
 }
+_LANG: str | None = None
+
+
+def detect_language() -> str:
+    forced = os.environ.get("CURSOR_PACK_LANG", "").lower()
+    if forced in {"ja", "en"}:
+        return forced
+    for key in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        value = os.environ.get(key, "").lower()
+        if value.startswith("ja"):
+            return "ja"
+        if value.startswith("en"):
+            return "en"
+    return "ja"
+
+
+def take_lang(argv: list[str]) -> tuple[list[str], str | None]:
+    rest: list[str] = []
+    chosen: str | None = None
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--lang":
+            if index + 1 >= len(argv):
+                chosen = ""
+                index += 1
+                continue
+            chosen = argv[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--lang="):
+            chosen = arg.split("=", 1)[1]
+            index += 1
+            continue
+        rest.append(arg)
+        index += 1
+    return rest, chosen
+
+
+def set_language(argv: list[str]) -> list[str]:
+    global _LANG
+    rest, chosen = take_lang(argv)
+    _LANG = detect_language()
+    if chosen is None:
+        return rest
+    if chosen not in {"ja", "en"}:
+        raise SystemExit(t("--lang には ja か en を指定してください。", "--lang must be ja or en."))
+    _LANG = chosen
+    return rest
+
+
+def language() -> str:
+    if _LANG is None:
+        set_language(sys.argv[1:])
+    assert _LANG is not None
+    return _LANG
+
+
+def t(ja: str, en: str) -> str:
+    return ja if language() == "ja" else en
+
+
+def missing_user_rules(text: str) -> bool:
+    body = text.lstrip()
+    return body.startswith("このパソコンの設定データベースから") or body.startswith(
+        "Could not read user rules from this computer"
+    )
 
 
 def home_dir() -> Path:
@@ -274,44 +332,52 @@ def collect_review(bundle: Path, included: list[str], redacted: list[str], rules
                     rewritten.extend(home_paths)
                     absolute.extend(other_paths)
     lines = [
-        "このパックに入っているファイル",
+        "このパックに入っているファイル / Files in this pack",
         *[f"- {name}" for name in included if name not in {"review.txt", "README.txt", "cursor_pack.py"}],
         "",
-        "入れていないもの",
-        "- Cursorのログイン情報とチャット履歴",
-        "- 拡張機能のプログラム本体（extensions.txt のIDから入れ直す）",
-        "- トークンやパスワードの値",
-        "- アカウント側だけにあり、このパソコンのファイルに無いルール",
+        "入れていないもの / Not included",
+        "- Cursorのログイン情報とチャット履歴 / Cursor login information and chat history",
+        "- 拡張機能のプログラム本体（extensions.txt のIDから入れ直す） / The extensions themselves (reinstall them from the IDs in extensions.txt)",
+        "- トークンやパスワードの値 / Token and password values",
+        "- アカウント側だけにあり、このパソコンのファイルに無いルール / Rules that exist only on the account and are not in a file on this computer",
         "",
     ]
     if redacted:
-        lines.append("空にした秘密情報")
+        lines.append("空にした秘密情報 / Cleared secrets")
         for name in redacted:
             lines.append(f"- {name}")
         lines.append("新しいパソコンで、必要な値を入れ直してください。")
+        lines.append("On the new computer, fill in the values you still need.")
         lines.append("")
     unique_rewritten = sorted(set(rewritten))
     if unique_rewritten:
-        lines.append("新しいパソコンのホームフォルダに合わせて戻すパス")
+        lines.append("新しいパソコンのホームフォルダに合わせて戻すパス / Paths restored to the new computer's home folder")
         for item in unique_rewritten:
             lines.append(f"- {item.replace(HOME_TOKEN, '~')}")
         lines.append("")
     unique_absolute = sorted(set(absolute))
     if unique_absolute:
         lines.append("このままでは届かないパス。新しいパソコンに合わせて書き換えてください")
+        lines.append("Paths that will not work as-is. Rewrite them for the new computer.")
         for item in unique_absolute:
             lines.append(f"- {item}")
         lines.append("")
     if rules is None:
         lines.append("ユーザールールは、このパソコンの設定データベースから読めませんでした。")
+        lines.append("User rules could not be read from this computer's settings database.")
     elif rules == "":
         lines.append("このパソコンのファイルにはユーザールールがありませんでした。")
+        lines.append("This computer's files had no user rules.")
     else:
         lines.append(f"ユーザールールを user-rules.txt に書き出しました（{len(rules)}文字）。")
+        lines.append(f"Exported user rules to user-rules.txt ({len(rules)} characters).")
         lines.append("設定画面にだけ書いているルールは、ここには入っていません。")
+        lines.append("Rules that exist only in the settings screen are not included here.")
     lines.append("")
     lines.append("フック（sage-hook など）は自動では戻しません。")
+    lines.append("Hooks (such as sage-hook) are not restored automatically.")
     lines.append("拡張機能を入れ直すと、その拡張機能がフックを作り直します。")
+    lines.append("Reinstalling an extension recreates that extension's hooks.")
     lines.append("")
     return "\n".join(lines)
 
@@ -334,6 +400,24 @@ def bundle_readme() -> str:
 --apply-user-rules はユーザールールを戻します。Cursorは終了した状態で実行してください。
 
 フックは戻りません。必要な拡張機能を入れ直してください。
+
+English
+
+How to restore on the new computer:
+
+1. Install Cursor
+2. Launch it once, then quit
+3. Run the following in this folder
+
+   python3 cursor_pack.py import . --install-extensions --apply-user-rules
+
+4. Read review.txt and fix any remaining paths
+5. Launch Cursor
+
+--install-extensions installs extensions. The cursor command is required.
+--apply-user-rules restores user rules. Quit Cursor before you run it.
+
+Hooks are not restored. Reinstall the extensions that need them.
 """
 
 
@@ -421,7 +505,8 @@ def export_bundle(out: Path) -> int:
         if rules is None:
             write_text(
                 staging / "user-rules.txt",
-                "このパソコンの設定データベースからユーザールールを読めませんでした。\n",
+                "このパソコンの設定データベースからユーザールールを読めませんでした。\n"
+                "Could not read user rules from this computer's settings database.\n",
             )
         else:
             write_text(staging / "user-rules.txt", rules)
@@ -453,9 +538,12 @@ def export_bundle(out: Path) -> int:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
-    print(f"書き出しました: {out}")
-    print("ログイン情報とチャット履歴は入れていません。")
-    print("中の review.txt に、新しいパソコンで直すパスを書いてあります。")
+    print(t(f"書き出しました: {out}", f"Exported: {out}"))
+    print(t("ログイン情報とチャット履歴は入れていません。", "Login information and chat history were not included."))
+    print(t(
+        "中の review.txt に、新しいパソコンで直すパスを書いてあります。",
+        "review.txt inside the archive lists paths to fix on the new computer.",
+    ))
     return 0
 
 
@@ -465,20 +553,20 @@ def bundle_root(path: Path) -> Path:
     children = [child for child in path.iterdir() if (child / "manifest.json").is_file()]
     if len(children) == 1:
         return children[0]
-    raise SystemExit("manifest.json が見つかりません。")
+    raise SystemExit(t("manifest.json が見つかりません。", "manifest.json was not found."))
 
 
 def open_bundle(path: Path) -> tuple[Path, Path | None]:
     if path.is_dir():
         return bundle_root(path), None
     if not path.is_file() or path.suffix.lower() != ".zip":
-        raise SystemExit("フォルダか zip を指定してください。")
+        raise SystemExit(t("フォルダか zip を指定してください。", "Specify a folder or a zip file."))
     extracted = Path(tempfile.mkdtemp(prefix="cursor-pack-import-"))
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():
             parts = Path(info.filename).parts
             if Path(info.filename).is_absolute() or ".." in parts:
-                raise SystemExit("パックの中身が不正です。")
+                raise SystemExit(t("パックの中身が不正です。", "The pack contents are invalid."))
         archive.extractall(extracted)
     return bundle_root(extracted), extracted
 
@@ -486,109 +574,127 @@ def open_bundle(path: Path) -> tuple[Path, Path | None]:
 def load_manifest(root: Path) -> dict[str, object]:
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
-        raise SystemExit("manifest.json がありません。この道具で書き出したパックを指定してください。")
+        raise SystemExit(t(
+            "manifest.json がありません。この道具で書き出したパックを指定してください。",
+            "manifest.json is missing. Specify a pack exported by this tool.",
+        ))
     data = json.loads(read_text(manifest_path))
     if data.get("version") != MANIFEST_VERSION:
-        raise SystemExit("このパックの形式には対応していません。")
+        raise SystemExit(t("このパックの形式には対応していません。", "This pack format is not supported."))
     return data
 
 
 def install_file(src: Path, dest: Path, dry_run: bool) -> None:
     text = relocate_in(read_text(src)) if src.is_file() else ""
     if dry_run:
-        print(f"戻す予定: {dest}")
+        print(t(f"戻す予定: {dest}", f"Would restore: {dest}"))
         return
     saved = backup(dest)
     if saved:
-        print(f"今のファイルを退避しました: {saved}")
+        print(t(f"今のファイルを退避しました: {saved}", f"Backed up the current file: {saved}"))
     write_text(dest, text)
     if dest.name == "mcp.json":
         os.chmod(dest, 0o600)
-    print(f"戻しました: {dest}")
+    print(t(f"戻しました: {dest}", f"Restored: {dest}"))
 
 
 def install_tree(src: Path, dest: Path, dry_run: bool) -> None:
     if dry_run:
-        print(f"戻す予定: {dest}")
+        print(t(f"戻す予定: {dest}", f"Would restore: {dest}"))
         return
     saved = backup(dest)
     if saved:
-        print(f"今のフォルダを退避しました: {saved}")
+        print(t(f"今のフォルダを退避しました: {saved}", f"Backed up the current folder: {saved}"))
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)
     for path in dest.rglob("*"):
         if path.is_file() and is_text_file(path):
             write_text(path, relocate_in(read_text(path)))
-    print(f"戻しました: {dest}")
+    print(t(f"戻しました: {dest}", f"Restored: {dest}"))
 
 
 def apply_user_rules(root: Path, dry_run: bool) -> int:
     rules_path = root / "user-rules.txt"
     if not rules_path.is_file():
-        print("user-rules.txt がありません。")
+        print(t("user-rules.txt がありません。", "user-rules.txt is missing."))
         return 1
     rules = read_text(rules_path)
-    if rules.startswith("このパソコンの設定データベースから"):
-        print("パックにユーザールールが入っていないので、戻していません。")
+    if missing_user_rules(rules):
+        print(t(
+            "パックにユーザールールが入っていないので、戻していません。",
+            "The pack has no user rules, so none were restored.",
+        ))
         return 0
     db = state_db()
     if dry_run:
-        print(f"ユーザールールを戻す予定: {db}")
+        print(t(f"ユーザールールを戻す予定: {db}", f"Would restore user rules: {db}"))
         return 0
     if cursor_is_running():
-        print("Cursorが起動中です。終了してから --apply-user-rules を付けてもう一度実行してください。")
+        print(t(
+            "Cursorが起動中です。終了してから --apply-user-rules を付けてもう一度実行してください。",
+            "Cursor is running. Quit it, then run again with --apply-user-rules.",
+        ))
         return 1
     if not db.is_file():
-        print("Cursorの設定データベースがありません。Cursorを一度起動して終了してから、もう一度実行してください。")
-        print(f"ルールの文面はここにあります: {rules_path}")
+        print(t(
+            "Cursorの設定データベースがありません。Cursorを一度起動して終了してから、もう一度実行してください。",
+            "Cursor's settings database is missing. Launch Cursor once, quit it, and run again.",
+        ))
+        print(t(f"ルールの文面はここにあります: {rules_path}", f"The rule text is here: {rules_path}"))
         return 1
     backup_text = user_dir() / f"user-rules.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
     previous = read_user_rules()
     if previous is not None:
         write_text(backup_text, previous)
-        print(f"今のユーザールールを退避しました: {backup_text}")
+        print(t(f"今のユーザールールを退避しました: {backup_text}", f"Backed up the current user rules: {backup_text}"))
     with sqlite3.connect(db) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO ItemTable(key, value) VALUES (?, ?)",
             (USER_RULE_KEY, rules),
         )
         conn.commit()
-    print("ユーザールールを戻しました。")
+    print(t("ユーザールールを戻しました。", "Restored user rules."))
     return 0
 
 
 def install_extensions(root: Path, dry_run: bool) -> int:
     listing = root / "extensions.txt"
     if not listing.is_file():
-        print("extensions.txt がありません。")
+        print(t("extensions.txt がありません。", "extensions.txt is missing."))
         return 1
     ids = [line.strip() for line in read_text(listing).splitlines() if line.strip()]
     if not ids:
-        print("入れる拡張機能はありません。")
+        print(t("入れる拡張機能はありません。", "There are no extensions to install."))
         return 0
     exe = shutil.which("cursor")
     if not exe:
-        print("cursor コマンドが見つかりません。")
-        print("Cursorのコマンドパレットで Install 'cursor' command in PATH を実行してください。")
-        print("そのあと、このフォルダの install-extensions.sh を実行できます。")
+        print(t("cursor コマンドが見つかりません。", "The cursor command was not found."))
+        print(t(
+            "Cursorのコマンドパレットで Install 'cursor' command in PATH を実行してください。",
+            "Run Install 'cursor' command in PATH from Cursor's command palette.",
+        ))
+        print(t(
+            "そのあと、このフォルダの install-extensions.sh を実行できます。",
+            "Then you can run install-extensions.sh in this folder.",
+        ))
         return 1
     if dry_run:
         for ext_id in ids:
-            print(f"入れる予定: {ext_id}")
+            print(t(f"入れる予定: {ext_id}", f"Would install: {ext_id}"))
         return 0
     failed: list[str] = []
     for ext_id in ids:
-        print(f"拡張機能を入れています: {ext_id}")
+        print(t(f"拡張機能を入れています: {ext_id}", f"Installing extension: {ext_id}"))
         result = subprocess.run([exe, "--install-extension", ext_id])
         if result.returncode != 0:
             failed.append(ext_id)
     if failed:
-        print("入れられなかった拡張機能:")
+        print(t("入れられなかった拡張機能:", "Extensions that failed to install:"))
         for ext_id in failed:
             print(f"- {ext_id}")
         return 1
-    print(f"拡張機能を {len(ids)} 個入れました。")
+    print(t(f"拡張機能を {len(ids)} 個入れました。", f"Installed {len(ids)} extensions."))
     return 0
 
 
@@ -628,36 +734,52 @@ def import_bundle_at(root: Path, install_ext: bool, apply_rules: bool, with_hook
         if hooks_dir.is_dir():
             install_tree(hooks_dir, dot_cursor() / "hooks", dry_run)
     else:
-        print("フックは戻していません。拡張機能を入れ直すと作り直されます。")
+        print(t(
+            "フックは戻していません。拡張機能を入れ直すと作り直されます。",
+            "Hooks were not restored. Reinstalling an extension recreates them.",
+        ))
     if apply_rules:
         status = max(status, apply_user_rules(root, dry_run))
     else:
-        print("ユーザールールは戻していません。戻すときは --apply-user-rules を付けて、Cursorを終了した状態で実行してください。")
+        print(t(
+            "ユーザールールは戻していません。戻すときは --apply-user-rules を付けて、Cursorを終了した状態で実行してください。",
+            "User rules were not restored. To restore them, quit Cursor and run again with --apply-user-rules.",
+        ))
     if install_ext:
         status = max(status, install_extensions(root, dry_run))
     else:
-        print("拡張機能は入れていません。入れるときは --install-extensions を付けてください。")
-    print("review.txt に、手で直すパスが書いてあります。")
+        print(t(
+            "拡張機能は入れていません。入れるときは --install-extensions を付けてください。",
+            "Extensions were not installed. To install them, run again with --install-extensions.",
+        ))
+    print(t("review.txt に、手で直すパスが書いてあります。", "review.txt lists paths to fix by hand."))
     return status
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Cursorの設定を別のパソコンへ運ぶ")
+    parser = argparse.ArgumentParser(description=t(
+        "Cursorの設定を別のパソコンへ運ぶ",
+        "Move Cursor settings to another computer",
+    ))
+    parser.add_argument("--lang", choices=["ja", "en"], help=t("表示言語（ja または en）", "Message language (ja or en)"))
     commands = parser.add_subparsers(dest="command", required=True)
 
-    export_cmd = commands.add_parser("export", help="このパソコンの設定をzipにまとめる")
-    export_cmd.add_argument("--out", type=Path, help="書き出すzipのパス")
+    export_cmd = commands.add_parser("export", help=t("このパソコンの設定をzipにまとめる", "Pack this computer's settings into a zip"))
+    export_cmd.add_argument("--lang", choices=["ja", "en"], help=t("表示言語（ja または en）", "Message language (ja or en)"))
+    export_cmd.add_argument("--out", type=Path, help=t("書き出すzipのパス", "Path of the zip to write"))
 
-    import_cmd = commands.add_parser("import", help="zipまたはフォルダから設定を戻す")
-    import_cmd.add_argument("bundle", type=Path, help="書き出したzipか、展開したフォルダ")
-    import_cmd.add_argument("--install-extensions", action="store_true", help="拡張機能を入れる")
-    import_cmd.add_argument("--apply-user-rules", action="store_true", help="ユーザールールを戻す")
-    import_cmd.add_argument("--with-hooks", action="store_true", help="フックも戻す")
-    import_cmd.add_argument("--dry-run", action="store_true", help="書き込まず、戻す内容だけ表示する")
+    import_cmd = commands.add_parser("import", help=t("zipまたはフォルダから設定を戻す", "Restore settings from a zip or folder"))
+    import_cmd.add_argument("--lang", choices=["ja", "en"], help=t("表示言語（ja または en）", "Message language (ja or en)"))
+    import_cmd.add_argument("bundle", type=Path, help=t("書き出したzipか、展開したフォルダ", "Exported zip, or the unzipped folder"))
+    import_cmd.add_argument("--install-extensions", action="store_true", help=t("拡張機能を入れる", "Install extensions"))
+    import_cmd.add_argument("--apply-user-rules", action="store_true", help=t("ユーザールールを戻す", "Restore user rules"))
+    import_cmd.add_argument("--with-hooks", action="store_true", help=t("フックも戻す", "Also restore hooks"))
+    import_cmd.add_argument("--dry-run", action="store_true", help=t("書き込まず、戻す内容だけ表示する", "Show what would be restored without writing"))
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
+    argv = set_language(argv)
     args = parse_args(argv)
     if args.command == "export":
         if args.out:

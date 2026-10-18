@@ -2,6 +2,8 @@
 
 Cursor の設定を、別のパソコンへ移すためのツールです。
 
+コマンド実行における表示言語は、パソコンの設定言語に依存します。言語の変更は `--lang ja` か `--lang en` を用いることで変更可能です。
+
 [English](#english)
 
 ## このパソコンで書き出す
@@ -48,6 +50,8 @@ python3 cursor_pack.py import . --install-extensions --apply-user-rules
 ## English
 
 A tool for moving Cursor settings to another computer.
+
+Messages follow this computer's language: Japanese if it is Japanese, English otherwise. Choose with `--lang ja` or `--lang en`. The exported `README.txt` and `review.txt` are written in both languages.
 
 ### Export on this computer
 
